@@ -1,17 +1,18 @@
 # coding=utf-8
 from __future__ import unicode_literals, division
 
+import math
 import copy
 import poco.utils.six as six
 import time
 from functools import wraps
 
+from poco.gesture import PendingGestureAction
 from poco.exceptions import PocoTargetTimeout, InvalidOperationException, PocoNoSuchNodeException, PocoTargetRemovedException
 from poco.sdk.exceptions import UnableToSetAttributeException
 from poco.utils.query_util import query_expr, build_query
-from poco.utils.track import MotionTrack
+from poco.utils.multitouch_gesture import make_pinching
 
-__author__ = 'lxn3032'
 __all__ = ['UIObjectProxy']
 
 
@@ -195,7 +196,8 @@ class UIObjectProxy(object):
                 uiobj._nodes_proxy_is_list = False
                 pos = uiobj.get_position()
                 self._sorted_children.append((uiobj, pos))
-        self._sorted_children.sort(lambda a, b: cmp(list(reversed(a)), list(reversed(b))), key=lambda v: v[1])
+
+        self._sorted_children.sort(key=lambda v: (v[1][1], v[1][0]))
         return self._sorted_children[item][0]
 
     def __len__(self):
@@ -251,7 +253,7 @@ class UIObjectProxy(object):
             uiobj._nodes_proxy_is_list = False
             pos = uiobj.get_position()
             sorted_nodes.append((uiobj, pos))
-        sorted_nodes.sort(lambda a, b: cmp(list(reversed(a)), list(reversed(b))), key=lambda v: v[1])
+        sorted_nodes.sort(key=lambda v: (v[1][1], v[1][0]))
 
         for obj, _ in sorted_nodes:
             yield obj
@@ -314,15 +316,16 @@ class UIObjectProxy(object):
         return ret
 
     @wait
-    def swipe(self, dir, focus=None, duration=0.5):
+    def swipe(self, direction, focus=None, duration=0.5):
         """
         Perform a swipe action given by the direction from this UI element. For notices and limitations see
         :py:meth:`.click() <poco.proxy.UIObjectProxy.click>`. 
 
         Args:
-            dir (2-:obj:`tuple`/2-:obj:`list`/:obj:`str`):  coordinates (x, y) in NormalizedCoordinate system, it can
-             be also specified as  'up', 'down', 'left', 'right'. Swipe 'up' is equivalent to [0, -0.1], swipe 'down' is
-             equivalent to [0, 0.1], swipe 'left' is equivalent to [-0.1, 0] and swipe 'right' is equivalent to [0, 0.1]
+            direction (2-:obj:`tuple`/2-:obj:`list`/:obj:`str`):  coordinates (x, y) in NormalizedCoordinate system, it
+             can be also specified as  'up', 'down', 'left', 'right'. Swipe 'up' is equivalent to [0, -0.1], swipe
+             'down' is equivalent to [0, 0.1], swipe 'left' is equivalent to [-0.1, 0] and swipe 'right' is equivalent
+             to [0, 0.1]
             focus (2-:obj:`tuple`/2-:obj:`list`/:obj:`str`): see :py:meth:`.click() <poco.proxy.UIObjectProxy.click>`
              for more details
             duration (:py:obj:`float`): time interval in which the action is performed
@@ -337,7 +340,7 @@ class UIObjectProxy(object):
             raise ValueError('Argument `duration` should be <float>. Got {}'.format(repr(duration)))
 
         focus = focus or self._focus or 'anchor'
-        dir_vec = self._direction_vector_of(dir)
+        dir_vec = self._direction_vector_of(direction)
         origin = self.get_position(focus)
         self.poco.pre_action('swipe', self, (origin, dir_vec))
         ret = self.poco.swipe(origin, direction=dir_vec, duration=duration)
@@ -367,8 +370,8 @@ class UIObjectProxy(object):
         else:
             target_pos = target.get_position()
         origin_pos = self.get_position()
-        dir = [target_pos[0] - origin_pos[0], target_pos[1] - origin_pos[1]]
-        return self.swipe(dir, duration=duration)
+        dir_ = [target_pos[0] - origin_pos[0], target_pos[1] - origin_pos[1]]
+        return self.swipe(dir_, duration=duration)
 
     def scroll(self, direction='vertical', percent=0.6, duration=2.0):
         """
@@ -386,7 +389,8 @@ class UIObjectProxy(object):
         """
 
         if direction not in ('vertical', 'horizontal'):
-            raise ValueError('Argument `direction` should be one of "vertical" or "horizontal". Got {}'.format(repr(direction)))
+            raise ValueError('Argument `direction` should be one of "vertical" or "horizontal". Got {}'
+                             .format(repr(direction)))
 
         focus1 = self._focus or [0.5, 0.5]
         focus2 = list(focus1)
@@ -406,9 +410,9 @@ class UIObjectProxy(object):
 
         Args:
             direction (:py:obj:`str`): pinching direction, only "in" or "out". "in" for squeezing, "out" for expanding
-            percent (:py:obj:`float`): pinching range from or expanding range to of the bounds of the UI
+            percent (:py:obj:`float`): squeezing range from or expanding range to of the bounds of the UI
             duration (:py:obj:`float`): time interval in which the action is performed
-            dead_zone (:py:obj:`float`): pinching end circle radius. should not be greater than `percent`
+            dead_zone (:py:obj:`float`): pinching inner circle radius. should not be greater than ``percent``
 
         Raises:
             PocoNoSuchNodeException: raised when the UI element does not exist
@@ -417,43 +421,48 @@ class UIObjectProxy(object):
         if direction not in ('in', 'out'):
             raise ValueError('Argument `direction` should be one of "in" or "out". Got {}'.format(repr(direction)))
         if dead_zone >= percent:
-            raise ValueError('Argument `dead_zone` should not be greater than `percent`')
+            raise ValueError('Argument `dead_zone` should not be greater than `percent`. dead_zoon={}, percent={}'
+                             .format(repr(dead_zone), repr(percent)))
 
-        half_distance = percent / 2
-        dead_zone_distance = dead_zone / 2
-        pa0 = self._focus or [0.5, 0.5]
-        pb0 = list(pa0)
-        pa1 = list(pa0)
-        pb1 = list(pa0)
-        if direction == 'in':
-            pa0[0] += half_distance
-            pa0[1] += half_distance
-            pb0[0] -= half_distance
-            pb0[1] -= half_distance
-            pa1[0] += dead_zone_distance
-            pa1[1] += dead_zone_distance
-            pb1[0] -= dead_zone_distance
-            pb1[1] -= dead_zone_distance
-        else:
-            pa1[0] += half_distance
-            pa1[1] += half_distance
-            pb1[0] -= half_distance
-            pb1[1] -= half_distance
-            pa0[0] += dead_zone_distance
-            pa0[1] += dead_zone_distance
-            pb0[0] -= dead_zone_distance
-            pb0[1] -= dead_zone_distance
-
-        speed = (percent - dead_zone) / 2 / duration
-        track_a = MotionTrack([pa0, pa1], speed)
-        track_b = MotionTrack([pb0, pb1], speed)
+        w, h = self.get_size()
+        x, y = self.get_position()
+        # focus = self._focus or [0.5, 0.5]
+        tracks = make_pinching(direction, [x, y], [w, h], percent, dead_zone, duration)
+        speed = math.sqrt(w * h) * (percent - dead_zone) / 2 / duration
 
         # 速度慢的时候，精度适当要提高，这样有助于控制准确
-        ret = self.poco.apply_motion_tracks([track_a, track_b], accuracy=speed * 0.03)
+        ret = self.poco.apply_motion_tracks(tracks, accuracy=speed * 0.03)
         return ret
 
-    def pan(self, dir, duration=2.0):
+    def pan(self, direction, duration=2.0):
         raise NotImplementedError
+
+    def start_gesture(self):
+        """
+        Start a gesture action. This method will return a :py:class:`PendingGestureAction
+        <poco.gesture.PendingGestureAction>` object which is able to generate decomposed gesture steps. You can invoke
+        ``.to`` and ``.hold`` any times in a chain. See the following example.
+
+        Examples:
+            ::
+
+                poco = Poco(...)
+                ui1 = poco('xxx')
+                ui2 = poco('yyy')
+
+                # touch down on ui1 and hold for 1s
+                # then drag to ui2 and hold for 1s
+                # finally release(touch up)
+                ui1.start_gesture().hold(1).to(ui2).hold(1).up()
+
+        .. note:: always starts touching down at the position of current UI object.
+
+        Returns:
+            :py:class:`PendingGestureAction <poco.gesture.PendingGestureAction>`: an object for building serialized
+            gesture action.
+        """
+
+        return PendingGestureAction(self.poco, self)
 
     def focus(self, f):
         """
@@ -505,20 +514,20 @@ class UIObjectProxy(object):
                             'Only "anchor/center" or 2-list/2-tuple available.'.format(type(focus)))
         return pos
 
-    def _direction_vector_of(self, dir):
-        if dir == 'up':
+    def _direction_vector_of(self, dir_):
+        if dir_ == 'up':
             dir_vec = [0, -0.1]
-        elif dir == 'down':
+        elif dir_ == 'down':
             dir_vec = [0, 0.1]
-        elif dir == 'left':
+        elif dir_ == 'left':
             dir_vec = [-0.1, 0]
-        elif dir == 'right':
+        elif dir_ == 'right':
             dir_vec = [0.1, 0]
-        elif type(dir) in (list, tuple):
-            dir_vec = dir
+        elif type(dir_) in (list, tuple):
+            dir_vec = dir_
         else:
             raise TypeError('Unsupported direction type {}. '
-                            'Only "up/down/left/right" or 2-list/2-tuple available.'.format(type(dir)))
+                            'Only "up/down/left/right" or 2-list/2-tuple available.'.format(type(dir_)))
         return dir_vec
 
     def wait(self, timeout=3):
@@ -594,7 +603,8 @@ class UIObjectProxy(object):
 
         Returns:
             None if no such attribute or its value is None/null/nil/etc. Otherwise the attribute value is returned. The
-            returned value type is json serializable.
+            returned value type is json serializable. In both py2 and py3, if the attribute value in remote is a
+            text-like object, the return value type will be :obj:`str`.
 
         Raises:
             PocoNoSuchNodeException: when the UI element does not exists
@@ -609,7 +619,10 @@ class UIObjectProxy(object):
         # 优化速度，只选择第一个匹配到的节点
         nodes = self._do_query(multiple=False)
         val = self.poco.agent.hierarchy.getAttr(nodes, name)
-        if six.PY2 and isinstance(val, unicode):
+        if six.PY2 and isinstance(val, six.text_type):
+            # 文本类型的属性值，只在python2里encode成utf-8的str，python3保持str类型
+            # 这是为了在写代码的时候，无论py2/3始终可以像下面这样写
+            # node.attr('text') == '节点属性值'
             val = val.encode('utf-8')
         return val
 
@@ -631,7 +644,7 @@ class UIObjectProxy(object):
         try:
             return self.poco.agent.hierarchy.setAttr(nodes, name, val)
         except UnableToSetAttributeException as e:
-            raise InvalidOperationException('"{}" of "{}"'.format(e.message, self))
+            raise InvalidOperationException('"{}" of "{}"'.format(str(e), self))
 
     def exists(self):
         """
@@ -653,12 +666,11 @@ class UIObjectProxy(object):
         <poco.proxy.UIObjectProxy.attr>`.
 
         Returns:
-            :obj:`str`: None if the UI element does not have the text element, otherwise the utf-8 encoded text value
+            :obj:`str`: None if the UI element does not have the text element, otherwise the utf-8 encoded text value.
+            In both py2 and py3, the return value type will be :obj:`str`.
         """
 
         text = self.attr('text')
-        if six.PY2 and type(text) is unicode:
-            text = text.encode('utf-8')
         return text
 
     def set_text(self, text):
@@ -711,10 +723,14 @@ class UIObjectProxy(object):
         return bounds
 
     def __str__(self):
-        return unicode(self).encode("utf-8")
+        if six.PY2:
+            return 'UIObjectProxy of "{}"'.format(query_expr(self.query)).encode("utf-8")
+        else:
+            return 'UIObjectProxy of "{}"'.format(query_expr(self.query))
 
-    def __unicode__(self):
-        return 'UIObjectProxy of "{}"'.format(query_expr(self.query))
+    if six.PY2:
+        def __unicode__(self):
+            return 'UIObjectProxy of "{}"'.format(query_expr(self.query))
 
     __repr__ = __str__
 

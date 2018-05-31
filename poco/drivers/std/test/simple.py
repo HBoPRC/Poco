@@ -17,7 +17,8 @@ class TestStandardFunction(unittest.TestCase):
         # u3d game 默认5001
         # cocos2dx-lua 默认15004
         connect_device('Android:///')
-        cls.poco = StdPoco(5001)
+        # connect_device('Windows:///?class_name=UnityWndClass&title_re=Unity.*')
+        cls.poco = StdPoco(15004)
 
     @classmethod
     def tearDownClass(cls):
@@ -25,12 +26,20 @@ class TestStandardFunction(unittest.TestCase):
 
     def test_dump(self):
         h = self.poco.agent.hierarchy.dump()
-        print json.dumps(h, indent=4)
+        s = json.dumps(h, indent=4)
+        print(s)
+        self.assertNotIn('"visible": false', s)
+
+    def test_dump_include_invisible_node(self):
+        h = self.poco.agent.hierarchy.dumper.dumpHierarchy(onlyVisibleNode=False)  # .hierarchy是FrozenUIHierarchy
+        s = json.dumps(h, indent=4)
+        print(s)
+        self.assertIn('"visible": false', s)
 
     def test_getSdkVersion(self):
-        print self.poco.agent.get_sdk_version()
+        print(self.poco.agent.get_sdk_version())
 
-    def test_nosuch_rpc_method(self):
+    def test_no_such_rpc_method(self):
         @sync_wrapper
         def wrapped(*args, **kwargs):
             return self.poco.agent.c.call('no_such_method')
@@ -48,7 +57,7 @@ class TestStandardFunction(unittest.TestCase):
             f.write(base64.b64decode(b64img))
 
     def test_get_screen_size(self):
-        print self.poco.get_screen_size()
+        print(self.poco.get_screen_size())
 
     def test_motion_events(self):
         ui = self.poco()[0]
@@ -64,7 +73,7 @@ class TestStandardFunction(unittest.TestCase):
         node.set_text(textval)
         node.invalidate()
         actualVal = node.get_text() or node.offspring(text=textval).get_text()
-        print repr(actualVal)
+        print(repr(actualVal))
         self.assertEqual(actualVal, textval)
 
     def test_clear_text(self):
@@ -72,11 +81,13 @@ class TestStandardFunction(unittest.TestCase):
         node.set_text('val2333')
         node.set_text('')
         node.invalidate()
-        actualVal = node.get_text()
-        self.assertEqual(actualVal, '')
+        actual_val = node.get_text()
+        if actual_val is None:
+            actual_val = node.offspring(text='').get_text()
+        self.assertEqual(actual_val, '')
 
     def test_instanceId(self):
         for n in self.poco():
-            instanceId = n.attr('_instanceId')
-            if instanceId:
-                print instanceId
+            instance_id = n.attr('_instanceId')
+            if instance_id:
+                print(instance_id)
